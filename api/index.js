@@ -1,8 +1,10 @@
 export const config = { runtime: "edge" };
 
-const TARGET_BASE = (process.env.TARGET_DOMAIN || "").replace(/\/$/, "");
+// متغیر اصلی برای آدرس سرور مقصد
+const REMOTE_ENDPOINT = (process.env.TARGET_DOMAIN || "").replace(/\/$/, "");
 
-const STRIP_HEADERS = new Set([
+// لیست هدرهایی که باید پاکسازی شوند
+const HEADERS_BLACKLIST = new Set([
   "host",
   "connection",
   "keep-alive",
@@ -19,39 +21,49 @@ const STRIP_HEADERS = new Set([
 ]);
 
 export default async function handler(req) {
-  if (!TARGET_BASE) {
+  // بررسی تنظیمات اولیه
+  if (!REMOTE_ENDPOINT) {
     return new Response("Misconfigured: TARGET_DOMAIN is not set", { status: 500 });
   }
 
   try {
-    const pathStart = req.url.indexOf("/", 8);
-    const targetUrl =
-      pathStart === -1 ? TARGET_BASE + "/" : TARGET_BASE + req.url.slice(pathStart);
+    // یافتن موقعیت مسیر در درخواست
+    const uriIdx = req.url.indexOf("/", 8);
+    // ساخت آدرس نهایی
+    const destination =
+      uriIdx === -1 ? REMOTE_ENDPOINT + "/" : REMOTE_ENDPOINT + req.url.slice(uriIdx);
 
-    const out = new Headers();
-    let clientIp = null;
+    // آماده‌سازی هدرهای ارسالی
+    const forwardedHeaders = new Headers();
+    let originIP = null;
+
     for (const [k, v] of req.headers) {
-      if (STRIP_HEADERS.has(k)) continue;
+      if (HEADERS_BLACKLIST.has(k)) continue;
       if (k.startsWith("x-vercel-")) continue;
+      
       if (k === "x-real-ip") {
-        clientIp = v;
+        originIP = v;
         continue;
       }
       if (k === "x-forwarded-for") {
-        if (!clientIp) clientIp = v;
+        if (!originIP) originIP = v;
         continue;
       }
-      out.set(k, v);
+      forwardedHeaders.set(k, v);
     }
-    if (clientIp) out.set("x-forwarded-for", clientIp);
+    
+    // ست کردن آی‌پی اصلی کاربر
+    if (originIP) forwardedHeaders.set("x-forwarded-for", originIP);
 
     const method = req.method;
-    const hasBody = method !== "GET" && method !== "HEAD";
+    // بررسی وجود بدنه در درخواست
+    const isPayloadPresent = method !== "GET" && method !== "HEAD";
 
-    return await fetch(targetUrl, {
+    // ارسال درخواست به سرور اصلی
+    return await fetch(destination, {
       method,
-      headers: out,
-      body: hasBody ? req.body : undefined,
+      headers: forwardedHeaders,
+      body: isPayloadPresent ? req.body : undefined,
       duplex: "half",
       redirect: "manual",
     });
